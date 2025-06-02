@@ -29,4 +29,23 @@ def criar_tabelas(conn):
         )
     ''')
 
+    cursor.execute('''
+        CREATE TABLE IF NOT EXISTS vendas (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        produto_id INTEGER NOT NULL,
+        data_venda TEXT NOT NULL,
+        quantidade INTEGER NOT NULL,
+        preco_venda REAL NOT NULL,
+        FOREIGN KEY (produto_id) REFERENCES produtos(id)
+
+        )
+    ''')
+    
+    print("Tabelas criadas com sucesso")
+
     conn.commit()
+    
+if __name__ == "__main__":
+    conn = conectar_banco()
+    criar_tabelas(conn)
+    conn.close()

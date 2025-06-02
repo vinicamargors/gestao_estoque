@@ -1,7 +1,7 @@
 import tkinter as tk
 from tkinter import ttk, messagebox
-from db import conectar_banco
-from datetime import datetime, timedelta
+from db import conectar_banco, criar_tabelas
+from datetime import datetime, date
 from logger import registrar_log
 
 def abrir_menu_principal():
@@ -120,11 +120,9 @@ def abrir_menu_principal():
         for i, campo in enumerate(campos):
             tk.Label(form, text=campo).pack()
             e = tk.Entry(form)
-
             valor = dados[i + 1]
             if campo == "Preço Base":
                 valor = str(valor).replace("R$", "").strip().replace(",", ".")
-
             e.insert(0, valor)
             e.pack()
             entradas.append(e)
@@ -155,8 +153,31 @@ def abrir_menu_principal():
 
         dados = tree.item(item)['values']
         produto_id = dados[0]
-        nome = dados[1]
+        categoria = dados[2]
+        fornecedor = dados[3]
+        data_entrada = dados[4]
+        data_validade = dados[5]
         qtd_estoque = int(dados[6])
+        preco_base = float(str(dados[7]).replace("R$", "").replace(",", "."))
+        nome_exibicao = f"{categoria} - {fornecedor}"  # apenas para exibição no título
+
+        validade_date = datetime.strptime(data_validade, "%Y-%m-%d").date()
+        dias_restantes = (validade_date - date.today()).days
+
+        if dias_restantes > 30:
+            preco_sugerido = preco_base
+        elif 15 < dias_restantes <= 30:
+            preco_sugerido = preco_base * 0.9
+        elif 10 < dias_restantes <= 15:
+            preco_sugerido = preco_base * 0.7
+        elif 5 < dias_restantes <= 10:
+            preco_sugerido = preco_base * 0.5
+        elif 2 < dias_restantes <= 5:
+            preco_sugerido = preco_base * 0.25
+        else:
+            preco_sugerido = 0  # Produto vencido ou próximo de vencer
+
+        preco_sugerido = round(preco_sugerido, 2)
 
         def confirmar_venda():
             try:
@@ -169,37 +190,75 @@ def abrir_menu_principal():
                     return
 
                 nova_qtd = qtd_estoque - qtd_venda
+                data_venda = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
 
                 conn = conectar_banco()
                 cursor = conn.cursor()
 
+                # Atualiza ou remove do estoque
                 if nova_qtd == 0:
                     cursor.execute("DELETE FROM produtos WHERE id = ?", (produto_id,))
-                    registrar_log(f"Venda de {qtd_venda} unidade(s) - Produto {nome} removido do estoque (zerado).")
+                    registrar_log(f"Venda de {qtd_venda} unidade(s) - Produto ID {produto_id} removido do estoque (zerado).")
                 else:
                     cursor.execute("UPDATE produtos SET quantidade = ? WHERE id = ?", (nova_qtd, produto_id))
-                    registrar_log(f"Venda de {qtd_venda} unidade(s) - Produto: {nome}, Restante: {nova_qtd}")
+                    registrar_log(f"Venda de {qtd_venda} unidade(s) - Produto ID: {produto_id}, Restante: {nova_qtd}")
+
+                # Registra a venda
+                cursor.execute("""
+                    INSERT INTO vendas (produto_id, data_venda, quantidade, preco_base, preco_venda)
+                    VALUES (?, ?, ?, ?, ?)""",
+                    (produto_id, data_venda, qtd_venda, preco_base, preco_sugerido))
 
                 conn.commit()
                 conn.close()
 
-                messagebox.showinfo("Sucesso", f"{qtd_venda} unidade(s) de '{nome}' vendidas.")
+                messagebox.showinfo("Sucesso", f"{qtd_venda} unidade(s) vendidas por R$ {preco_sugerido:.2f} cada.")
                 venda_janela.destroy()
-                carregar_produtos() # type: ignore
+                carregar_dados()
 
             except ValueError:
                 messagebox.showerror("Erro", "Informe uma quantidade válida.")
 
         venda_janela = tk.Toplevel(janela)
-        venda_janela.title(f"Vender - {nome}")
+        venda_janela.title(f"Vender - {nome_exibicao}")
 
         tk.Label(venda_janela, text=f"Quantidade disponível: {qtd_estoque}").pack(pady=5)
+        tk.Label(venda_janela, text=f"Preço sugerido: R$ {preco_sugerido:.2f}").pack(pady=5)
         tk.Label(venda_janela, text="Quantidade a vender:").pack()
         entry_qtd = tk.Entry(venda_janela)
         entry_qtd.pack(pady=5)
 
         tk.Button(venda_janela, text="Confirmar Venda", command=confirmar_venda).pack(pady=10)
 
+    def ver_historico_vendas():
+        historico_janela = tk.Toplevel(janela)
+        historico_janela.title("Histórico de Vendas")
+        historico_janela.geometry("800x400")
+
+        colunas = ("ID", "ID Produto", "Nome", "Quantidade", "Preço Base", "Preço Venda", "Data da Venda")
+        tree_vendas = ttk.Treeview(historico_janela, columns=colunas, show="headings")
+
+        for col in colunas:
+            tree_vendas.heading(col, text=col)
+            tree_vendas.column(col, anchor=tk.CENTER, width=120)
+        tree_vendas.pack(expand=True, fill=tk.BOTH, padx=10, pady=10)
+
+        conn = conectar_banco()
+        cursor = conn.cursor()
+        cursor.execute("""
+            SELECT v.id, v.produto_id, p.nome, v.quantidade, v.preco_base, v.preco_venda, v.data_venda
+            FROM vendas v
+            JOIN produtos p ON v.produto_id = p.id
+            ORDER BY v.data_venda DESC
+        """)
+        for row in cursor.fetchall():
+            tree_vendas.insert("", tk.END, values=row)
+        conn.close()
+
+
+        conn.close()
+
+        registrar_log("Visualizou histórico de vendas")
 
     def excluir_produto():
         item = tree.focus()
@@ -250,7 +309,6 @@ def abrir_menu_principal():
                 preco_sugerido = preco_base * 0.25
             else:
                 preco_sugerido = 0
-
                 alerta_ativos.append(
                     f"⚠ PRODUTO: [{id} - {nome.upper()}]\nVENCE HOJE OU ESTÁ VENCIDO → RETIRE DA PRATELEIRA\n"
                 )
@@ -269,7 +327,6 @@ def abrir_menu_principal():
             messagebox.showinfo("Sugestão", "Produtos sugeridos com base na validade.")
         registrar_log("Consultou sugestão de venda baseada na validade dos produtos")
 
-            # Botão voltar
         def voltar_visualizacao():
             for item in tree.get_children():
                 tree.delete(item)
@@ -280,9 +337,6 @@ def abrir_menu_principal():
         btn_voltar = tk.Button(janela, text="← Voltar", command=voltar_visualizacao, bg="#e0e0e0")
         btn_voltar.pack(pady=5)
 
-        registrar_log("Consultou sugestão de venda baseada na validade dos produtos")
-
-
     # Botões
     frame_botoes = tk.Frame(janela)
     frame_botoes.pack(pady=10)
@@ -291,6 +345,7 @@ def abrir_menu_principal():
     tk.Button(frame_botoes, text="Editar", command=editar_produto).pack(side=tk.LEFT, padx=5)
     tk.Button(frame_botoes, text="Excluir", command=excluir_produto).pack(side=tk.LEFT, padx=5)
     tk.Button(frame_botoes, text="Ver Sugestão de Venda", command=sugestao_venda).pack(side=tk.LEFT, padx=5)
+    tk.Button(frame_botoes, text="Histórico de Vendas", command=ver_historico_vendas).pack(side=tk.LEFT, padx=5)
     tk.Button(janela, text="Vender", command=vender_produto).pack(pady=10)
 
     carregar_dados()
